@@ -1,0 +1,445 @@
+---
+id: user-facing-errors
+title: User-facing errors
+---
+
+Because Ory Kratos doesn't render User Interfaces, we implemented a flow that allows you to implement the error page in any way
+you want.
+
+## User-facing errors in the browser
+
+When a user-facing error occurs for example during Self Service User Login, Ory Kratos will store error message and context and
+redirect the User's Browser to the Error UI URL set by the `selfservice.flows.error.ui_url` configuration or
+`SELFSERVICE_FLOWS_ERROR_UI_URL` environment variable.
+
+Assuming `selfservice.flows.error.ui_url` is set to `https://example.org/errors`, Ory Kratos will redirect the User's Browser to
+`https://example.org/errors?id=abcde`.
+
+The route matching `https://example.org/errors` uses the `error` URL Query parameter value `abcde` to make a request to Ory
+Kratos' Public or Admin API `https://kratos-<public|admin>/self-service/errors?id=abcde`. The JSON Response contains a list of
+errors and their details, for example:
+
+```json
+[
+  {
+    "code": 500,
+    "message": "no such file or directory"
+  }
+]
+```
+
+We're working on documenting possible error messages and homogenize error layouts. Errors have the following keys defined:
+
+```json
+{
+  "code": 500,
+  "message": "some message",
+  "reason": "some reason",
+  "debug": "some debug info"
+}
+```
+
+## User-facing errors when consuming APIs
+
+When a user-facing error occurs and the HTTP client is an API Client (for example a mobile app), the error will be returned as the
+HTTP Response. No additional steps are required.
+
+## Error reference
+
+When an Ory Self-Service Flow rejects a request, the response status and body together identify the failure. This section is a
+quick lookup organized by what you see — the HTTP status surfaced to the client — and grouped by where the error originates.
+Expand a row for the literal response message, the cause, and the fix. The machine-readable identifier stays on the summary line
+so you can scan and search for it.
+
+The [error catalog code appendix](#error-catalog-code-appendix) at the end of this page maps every Kratos `4xxxxxx` validation
+code to its identifier and message.
+
+### Session and whoami
+
+Errors during `/sessions/whoami` or any endpoint that requires an authenticated session.
+
+<details>
+<summary><span className="http-badge">401</span> No active session — cookie didn't reach Kratos or session expired <code>session_inactive</code></summary>
+
+**Message** — _"request does not have a valid authentication session"_ · reason _"No active session was found in this request."_
+
+**Cause** — The session cookie did not reach Kratos — typically a `cookies.domain` mismatch between the cookie and the API origin,
+or the session has expired.
+
+**Resolution** — Verify `cookies.domain` matches the public API host, and re-authenticate to confirm the session is valid. See
+[Session lifespan](../../session-management/10_session-lifespan.mdx).
+
+</details>
+
+<details>
+<summary><span className="http-badge">401</span> whoami fails cross-origin with no <code>Access-Control-Allow-Origin</code> <code>session_inactive</code></summary>
+
+**Message** — Same `session_inactive` body as above; the browser often shows only a CORS error because the response carries no
+allowed-origin header.
+
+**Cause** — The cookie was not sent cross-origin (`cookies.domain` doesn't cover the custom domain), or CORS isn't configured for
+the API origin.
+
+**Resolution** — Set `cookies.domain` correctly and configure CORS so the API origin receives `Access-Control-Allow-Origin`. See
+[Custom domains](/guides/custom-domains).
+
+</details>
+
+<details>
+<summary><span className="http-badge">403</span> Settings rejected — privileged session required <code>session_refresh_required</code></summary>
+
+**Message** — reason _"The login session is too old and thus not allowed to update these fields. Please re-authenticate."_ The
+body includes a `redirect_browser_to` URL.
+
+**Cause** — The last authentication is older than `selfservice.flows.settings.privileged_session_max_age`.
+
+**Resolution** — Re-authenticate to refresh the privileged session, or increase
+`selfservice.flows.settings.privileged_session_max_age` if a longer window is acceptable.
+
+</details>
+
+<details>
+<summary><span className="http-badge">403</span> AAL too low — step-up authentication required <code>session_aal2_required</code></summary>
+
+**Message** — error _"Session does not fulfill the requested Authenticator Assurance Level"_ · reason _"An active session was
+found but it does not fulfill the requested Authenticator Assurance Level. Please verify yourself with a second factor to resolve
+this issue."_ The body includes a `redirect_browser_to` URL.
+
+**Cause** — The session is AAL1 but the flow requires AAL2 (governed by `session.whoami.required_aal` and
+`selfservice.flows.settings.required_aal`).
+
+**Resolution** — Send the user through a fresh login flow at `/self-service/login/browser?aal=aal2` to complete an MFA challenge,
+following the `redirect_browser_to` URL from the error body.
+
+</details>
+
+<details>
+<summary><span className="http-badge">403</span> CSRF check failed on a browser POST <code>security_csrf_violation</code></summary>
+
+**Message** — error _"the request was rejected to protect you from Cross-Site-Request-Forgery"_ · reason _"Please retry the flow
+and optionally clear your cookies…"_
+
+**Cause** — The CSRF token was missing, expired, or did not match — commonly a cookie-domain mismatch, a public-suffix domain, or
+a cross-origin POST where the CSRF cookie was not sent.
+
+**Resolution** — Verify `cookies.domain` is correct and is not a public-suffix domain, and ensure the request carries the CSRF
+cookie from the origin that issued the flow. See [CSRF troubleshooting](../../../troubleshooting/10_crsf.mdx).
+
+</details>
+
+### Self-service flow errors
+
+From the Kratos validation catalog when a login, registration, or settings flow can't proceed.
+
+<details>
+<summary><span className="http-badge">410</span> Login flow expired <code>self_service_flow_expired</code> · <code>4010001</code></summary>
+
+**Message** — API/SPA clients receive HTTP 410 with reason _"The self-service flow expired X.XX minutes ago, initialize a new
+one."_ The flow's UI message catalog code is `4010001` _"The login flow expired X.XX minutes ago, please try again."_ Browser
+flows receive a 303 redirect to a fresh flow instead of a JSON error.
+
+**Cause** — The flow exceeded `selfservice.flows.login.lifespan`.
+
+**Resolution** — Start a new login flow (`GET /self-service/login/browser` or `GET /self-service/login/api`), or increase
+`selfservice.flows.login.lifespan`.
+
+</details>
+
+<details>
+<summary><span className="http-badge">410</span> Registration flow expired <code>self_service_flow_expired</code> · <code>4040001</code></summary>
+
+**Message** — Same 410 (API/SPA) and 303 (browser) behavior as login. UI message catalog code `4040001` _"The registration flow
+expired X.XX minutes ago, please try again."_
+
+**Cause** — The flow exceeded `selfservice.flows.registration.lifespan`.
+
+**Resolution** — Start a new registration flow, or increase `selfservice.flows.registration.lifespan`.
+
+</details>
+
+<details>
+<summary><span className="http-badge">400</span> Identifier already exists during registration <code>4000007</code></summary>
+
+**Message** — UI message catalog code `4000007` (`ErrorValidationDuplicateCredentials`) _"An account with the same identifier
+(email, phone, username, …) exists already."_ rendered in the flow's UI messages with HTTP 400.
+
+**Cause** — The identifier already belongs to an existing identity — commonly from a prior registration, an identity import, or an
+OIDC link.
+
+**Resolution** — Direct the user to the login flow instead. The admin `POST /admin/identities` path instead returns **409** _"This
+identity conflicts with another identity that already exists."_ — handle that case when importing identities.
+
+</details>
+
+<details>
+<summary><span className="http-badge">422</span> updateSettingsFlow needs a browser location change (not AAL) <code>browser_location_change_required</code></summary>
+
+**Message** — error _"browser location change required"_ · reason _"In order to complete this flow please redirect the browser to:
+…"_ The URL is in the `redirect_browser_to` field.
+
+**Cause** — The settings flow needs the browser to navigate to another URL (for example an OIDC step-up), but the request was made
+over the API without browser context. The 422 is a redirect signal, not an authentication-level failure.
+
+**Resolution** — For browser clients, follow the `redirect_browser_to` URL in the response body. For API or native clients,
+surface that URL and let the user complete the redirect in a browser. Privileged-session and AAL failures use 403, not 422 — don't
+conflate them.
+
+</details>
+
+<details>
+<summary><span className="http-badge">410</span> Settings flow expired <code>self_service_flow_expired</code> · <code>4050001</code></summary>
+
+**Message** — Same 410 (API/SPA) and 303 (browser) behavior. UI message catalog code `4050001` _"The settings flow expired X.XX
+minutes ago, please try again."_
+
+**Cause** — The flow exceeded `selfservice.flows.settings.lifespan`.
+
+**Resolution** — Start a new settings flow.
+
+</details>
+
+### OAuth2 and OIDC
+
+OAuth2-spec errors emitted by Ory Hydra. They are returned as `{"error":"…","error_description":"…"}`, and some paths add a
+`hint`.
+
+<details>
+<summary><span className="http-badge">400</span> Refresh token expired <code>invalid_grant</code></summary>
+
+**Message** — hint _"The refresh token expired."_ (the `error_description` is the standard `invalid_grant` text).
+
+**Resolution** — Re-authenticate to obtain a new refresh token, and check the token's `exp` claim.
+
+</details>
+
+<details>
+<summary><span className="http-badge">400</span> Refresh token already used (rotation reuse) <code>invalid_grant</code></summary>
+
+**Message** — hint _"The refresh token was already used."_ With debug output enabled, the debug field adds _"Refresh token re-use
+was detected. All related tokens have been revoked."_
+
+**Cause** — Rotation is enabled by default; a rotated token was replayed — often a client retry after a network timeout. Reuse
+revokes the whole token chain.
+
+**Resolution** — Ensure only one process consumes a given refresh token, and use idempotent retries.
+
+</details>
+
+<details>
+<summary><span className="http-badge">400</span> Empty POST body to <code>/admin/oauth2/introspect</code> <code>invalid_request</code></summary>
+
+**Message** — hint _"The POST body can not be empty."_
+
+**Resolution** — Send `token=<value>` form-encoded in the POST body. If Oathkeeper is the caller, verify its introspection
+authenticator is configured correctly.
+
+</details>
+
+<details>
+<summary><span className="http-badge">401</span> Client authentication failed <code>invalid_client</code></summary>
+
+**Message** — error*description *"Client authentication failed (e.g., unknown client, no client authentication included, or
+unsupported authentication method)."\_ An auth-method mismatch adds a hint naming the client's configured
+`token_endpoint_auth_method`.
+
+**Cause** — Unknown client ID, wrong secret, or a `token_endpoint_auth_method` (`client_secret_post` vs `client_secret_basic`)
+that differs from how credentials are sent.
+
+**Resolution** — Verify the client ID and secret, and that `token_endpoint_auth_method` matches how the integrator sends
+credentials. Rotate the secret if compromise is suspected.
+
+</details>
+
+<details>
+<summary><span className="http-badge http-badge--server">500</span> Token hook returned 5xx <code>server_error</code></summary>
+
+**Message** — error*description *"The token hook target responded with an error."_ With debug output enabled, the debug field adds
+_"Token hook responded with HTTP status code: …"\_
+
+**Cause** — The hook configured at `oauth2.token_hook` (or `oauth2.refresh_token_hook` for the refresh grant) was down, timed out,
+or returned unexpected output.
+
+**Resolution** — Check the health and logs of the hook service, and ensure the hook URL is reachable from Hydra. Add a circuit
+breaker on the hook side to prevent cascading failures.
+
+</details>
+
+### Self-service callouts and hooks
+
+When a configured webhook (Ory Action) fails during a self-service flow.
+
+<details>
+<summary><span className="http-badge http-badge--server">502</span> Pre-registration webhook returned a non-2xx status</summary>
+
+**Message** — reason _"A third-party upstream service responded improperly. Please try again later."_ · error _"webhook failed
+with status code N"_ (the upstream status is interpolated).
+
+**Cause** — Any non-2xx webhook response aborts the flow, and Kratos returns 502. Browsers may also show a CORS error because the
+502 response lacks `Access-Control-Allow-Origin`.
+
+**Resolution** — Inspect the webhook's logs for why it returned a non-2xx status — typically an auth misconfiguration between
+Kratos and the webhook target. To make a hook non-blocking, set `response.ignore: true` (fire-and-forget, errors ignored); to
+surface a structured error to the user, set `response.parse: true`. `can_interrupt` is deprecated. See
+[Ory Actions](../../hooks/01_configure-hooks.mdx). A webhook _timeout_ instead returns **504** _"A third-party upstream service
+could not be reached. Please try again later."_
+
+</details>
+
+<details>
+<summary><span className="http-badge http-badge--na">n/a</span> Webhook fired but the outcome is not visible</summary>
+
+**Message** — Not an error response — an observability gap.
+
+**Cause** — Webhook delivery outcomes are not surfaced in the default operator UI. Without explicit log inspection on the
+receiving side, there is no way to confirm whether the webhook reached its target or what response came back.
+
+**Resolution** — Enable verbose logging on the receiving webhook service. On Ory Network, check the project's event log or event
+streams for the corresponding self-service flow.
+
+</details>
+
+### Network and project plumbing
+
+These come from Ory Network infrastructure rather than Kratos or Hydra, so treat the exact message strings as approximate.
+
+<details>
+<summary><span className="http-badge">404</span> Custom domain not associated with a project</summary>
+
+**Message** — _"The requested host is not associated with any Ory Network Project"_ (gateway message).
+
+**Cause** — The custom domain has not been fully provisioned and bound to an Ory Network project. Either the DNS CNAME has not
+propagated, or the domain hasn't been activated in the project settings.
+
+**Resolution** — Add the custom domain in the Ory Console and point the CNAME at the assigned Ory subdomain; wait for DNS
+propagation before retrying. See [Custom domains](/guides/custom-domains).
+
+</details>
+
+<details>
+<summary><span className="http-badge">401</span> Admin API returns 401 with a valid-looking API key</summary>
+
+**Cause** — The key is a workspace API key, which cannot manage project data such as identities, sessions, or OAuth2 clients.
+
+**Resolution** — Use a project API key for identity, session, and OAuth2 calls; use a workspace API key for workspace-level
+operations such as creating projects. See [API keys](/concepts/personal-access-token).
+
+</details>
+
+<details>
+<summary><span className="http-badge">431</span> Request Header Fields Too Large</summary>
+
+**Cause** — The combined Cookie header exceeds the server's header-size limit, usually a too-broad `cookies.domain` that leaks
+parent-domain cookies into every subdomain request.
+
+**Resolution** — Scope `cookies.domain` to the specific subdomain in use, not the apex.
+
+</details>
+
+### Rate limiting
+
+<details>
+<summary><span className="http-badge">429</span> Too many requests under load</summary>
+
+**Cause** — The project or workspace has exceeded its allocated request rate for the endpoint. Rate limits apply per project on
+Ory Network; workspace-level limits aggregate all projects in the workspace.
+
+**Resolution** — Implement exponential backoff with jitter in the calling client, and review the limit for your plan. See
+[Rate limits](/guides/rate-limits).
+
+</details>
+
+## Using stub errors
+
+The error endpoint supports stub errors which can be used to implement your Error UI:
+
+- `?id=stub:500` - returns a stub 500 (Internal Server Error) error.
+
+To call a stub error, simply do:
+
+```sh
+curl -s \
+  'https://playground.projects.oryapis.com/self-service/errors?id=stub:500' | jq
+
+{
+  "id": "9f900efa-a5ea-4dfd-8311-a8c7448ffeec",
+  "error": {
+    "code": 500,
+    "status": "Internal Server Error",
+    "reason": "This is a stub error.",
+    "message": "An internal server error occurred, please contact the system administrator"
+  },
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "0001-01-01T00:00:00Z"
+}
+```
+
+## Error catalog code appendix
+
+Use this appendix when you hit a 7-digit catalog code in a Kratos JSON error response and want to look up its meaning. Codes are
+grouped by the flow type encoded in the prefix: login (`401xxxx`), registration (`404xxxx`), settings (`405xxxx`), recovery
+(`406xxxx`), and verification (`407xxxx`).
+
+The messages below are the literal `Text:` values from the Kratos source. Where a value is `_(dynamic — context-dependent)_`, the
+source has no fixed string and the message is populated at runtime (for example by schema validation). Flow-expired messages
+include the elapsed time formatted to two decimals, shown here as "X.XX minutes ago".
+
+### Login (4010xxx)
+
+| Code    | Identifier                                        | Message                                                                                        |
+| ------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 4010000 | `ErrorValidationLogin`                            | _(dynamic — context-dependent)_                                                                |
+| 4010001 | `ErrorValidationLoginFlowExpired`                 | "The login flow expired X.XX minutes ago, please try again."                                   |
+| 4010002 | `ErrorValidationLoginNoStrategyFound`             | "Could not find a strategy to log you in with. Did you fill out the form correctly?"           |
+| 4010003 | `ErrorValidationRegistrationNoStrategyFound`      | "Could not find a strategy to sign you up with. Did you fill out the form correctly?"          |
+| 4010004 | `ErrorValidationSettingsNoStrategyFound`          | "Could not find a strategy to update your settings. Did you fill out the form correctly?"      |
+| 4010005 | `ErrorValidationRecoveryNoStrategyFound`          | "Could not find a strategy to recover your account with. Did you fill out the form correctly?" |
+| 4010006 | `ErrorValidationVerificationNoStrategyFound`      | "Could not find a strategy to verify your account with. Did you fill out the form correctly?"  |
+| 4010007 | `ErrorValidationLoginRetrySuccess`                | "The request was already completed successfully and can not be retried."                       |
+| 4010008 | `ErrorValidationLoginCodeInvalidOrAlreadyUsed`    | "The login code is invalid or has already been used. Please try again."                        |
+| 4010009 | `ErrorValidationLoginLinkedCredentialsDoNotMatch` | "Linked credentials do not match."                                                             |
+| 4010010 | `ErrorValidationLoginAddressUnknown`              | "The address you entered does not match any known addresses in the current account."           |
+| 4010011 | `ErrorValidationIdentityDisabled`                 | "This account has been disabled. Please contact support for assistance."                       |
+
+Codes 4010003–4010006 concern registration, settings, recovery, and verification strategies but are numbered inside the login
+(`4010xxx`) block in the Kratos source.
+
+### Registration (4040xxx)
+
+| Code    | Identifier                                                                       | Message                                                                        |
+| ------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 4040000 | `ErrorValidationRegistration`                                                    | _(dynamic — context-dependent)_                                                |
+| 4040001 | `ErrorValidationRegistrationFlowExpired`                                         | "The registration flow expired X.XX minutes ago, please try again."            |
+| 4040002 | `ErrorValidateionRegistrationRetrySuccess` _(misspelling preserved from source)_ | "The request was already completed successfully and can not be retried."       |
+| 4040003 | `ErrorValidationRegistrationCodeInvalidOrAlreadyUsed`                            | "The registration code is invalid or has already been used. Please try again." |
+
+### Settings (4050xxx)
+
+| Code    | Identifier                                     | Message                                                                             |
+| ------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 4050000 | `ErrorValidationSettings`                      | _(dynamic — context-dependent)_                                                     |
+| 4050001 | `ErrorValidationSettingsFlowExpired`           | "The settings flow expired X.XX minutes ago, please try again."                     |
+| 4050002 | `ErrorValidationSettingsTooManyAddressChanges` | "You can only change one address at a time. Please update each address separately." |
+
+### Recovery (4060xxx)
+
+| Code    | Identifier                                         | Message                                                                          |
+| ------- | -------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 4060000 | `ErrorValidationRecovery`                          | _(dynamic — context-dependent)_                                                  |
+| 4060001 | `ErrorValidationRecoveryRetrySuccess`              | "The request was already completed successfully and can not be retried."         |
+| 4060002 | `ErrorValidationRecoveryStateFailure`              | "The recovery flow reached a failure state and must be retried."                 |
+| 4060003 | `ErrorValidationRecoveryMissingRecoveryToken`      | _(dynamic — context-dependent)_                                                  |
+| 4060004 | `ErrorValidationRecoveryTokenInvalidOrAlreadyUsed` | "The recovery token is invalid or has already been used. Please retry the flow." |
+| 4060005 | `ErrorValidationRecoveryFlowExpired`               | "The recovery flow expired X.XX minutes ago, please try again."                  |
+| 4060006 | `ErrorValidationRecoveryCodeInvalidOrAlreadyUsed`  | "The recovery code is invalid or has already been used. Please try again."       |
+
+### Verification (4070xxx)
+
+| Code    | Identifier                                             | Message                                                                              |
+| ------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| 4070000 | `ErrorValidationVerification`                          | _(dynamic — context-dependent)_                                                      |
+| 4070001 | `ErrorValidationVerificationTokenInvalidOrAlreadyUsed` | "The verification token is invalid or has already been used. Please retry the flow." |
+| 4070002 | `ErrorValidationVerificationRetrySuccess`              | "The request was already completed successfully and can not be retried."             |
+| 4070003 | `ErrorValidationVerificationStateFailure`              | "The verification flow reached a failure state and must be retried."                 |
+| 4070004 | `ErrorValidationVerificationMissingVerificationToken`  | _(dynamic — context-dependent)_                                                      |
+| 4070005 | `ErrorValidationVerificationFlowExpired`               | "The verification flow expired X.XX minutes ago, please try again."                  |
+| 4070006 | `ErrorValidationVerificationCodeInvalidOrAlreadyUsed`  | "The verification code is invalid or has already been used. Please try again."       |

@@ -38,7 +38,7 @@ IETF, Microsoft Research, Google Research, Troy Hunt, ...) and implements the fo
 - [User Settings](self-service/flows/user-settings.mdx)
 - [Account Recovery](./self-service/flows/account-recovery-password-reset.mdx)
 - [Address Verification](self-service/flows/verify-email-account-activation.mdx)
-- [User-Facing Error](self-service/flows/user-facing-errors.md)
+- [User-Facing Error](self-service/flows/user-facing-errors.mdx)
 - 2FA / MFA
 
 Some flows break down into "flow methods" which implement some of the flow's business logic:
@@ -379,7 +379,7 @@ which now includes validation errors and other potential messages:
 ```
 
 If a system error (for example broken configuration file) occurs, the browser is redirected to the
-[Error UI](self-service/flows/user-facing-errors.md).
+[Error UI](self-service/flows/user-facing-errors.mdx).
 
 If the form payload is valid, the flow completes with a success. The result here depends on the flow itself - the login flow for
 example redirects the user to a specified redirect URL and sets a session cookie. The registration flow also redirects to a
